@@ -1,0 +1,7 @@
+node_modules/
+.lexue-cookies.json
+debug-login.html
+login-page.png
+tmp-*.mjs
+.claude/
+/CLAUDE.md
