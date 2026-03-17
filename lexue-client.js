@@ -11,10 +11,7 @@ import ICAL from 'ical.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
 import { ProxyAgent } from 'undici';
-
-const require = createRequire(import.meta.url);
 
 // 获取 __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -50,14 +47,6 @@ class CookieManager {
     } catch (e) {
       console.error('保存 Cookie 失败:', e.message);
     }
-  }
-
-  set(key, value) {
-    this.cookies[key] = value;
-  }
-
-  get(key) {
-    return this.cookies[key];
   }
 
   toString() {
@@ -182,10 +171,6 @@ class LexueClient {
     try {
       const response = await this.request(`${SSO_URL}/cas/login`, { redirect: 'manual' });
       const html = await response.text();
-      console.error('DEBUG - HTML 长度:', html.length);
-
-      // 保存调试 HTML
-      fs.writeFileSync(path.join(__dirname, 'debug-login.html'), html);
 
       const $ = cheerio.load(html);
 
@@ -198,19 +183,11 @@ class LexueClient {
       // 提取其他隐藏字段
       const loginRuleType = $('#login-rule-type').text().trim();
       const currentLoginType = $('#current-login-type').text().trim();
-      const siteId = $('#siteId').text().trim();
-      const targetSystem = $('#targetSystem').text().trim();
       const riskSystemSwitch = $('#riskSystemSwitch').text().trim();
-
-      console.error('DEBUG - extra fields:', { loginRuleType, currentLoginType, siteId, targetSystem, riskSystemSwitch });
 
       const hasAuthCookie = this.cookieManager.hasAny(['SOURCEID_TGC', 'MOD_AUTH_CAS', 'CASTGC']);
       const hasLoginForm = Boolean(salt && execution);
       const ifLogin = hasAuthCookie && !hasLoginForm;
-
-      console.error('DEBUG - salt:', salt);
-      console.error('DEBUG - execution:', execution);
-      console.error('DEBUG - ifLogin:', ifLogin);
 
       return { salt, execution, ifLogin, loginRuleType, currentLoginType, riskSystemSwitch };
     } catch (e) {
@@ -252,8 +229,6 @@ class LexueClient {
         riskSystemSwitch: riskSystemSwitch || 'default'
       });
 
-      console.error('DEBUG - formData:', formData.toString());
-
       const response = await this.request(`${SSO_URL}/cas/login`, {
         method: 'POST',
         headers: {
@@ -265,16 +240,11 @@ class LexueClient {
 
       // 4. 检查登录结果
       const html = await response.text();
-      console.error('DEBUG - login status:', response.status);
-      console.error('DEBUG - login response length:', html.length);
-      console.error('DEBUG - login response preview:', html.substring(0, 500));
 
       const hasAuthCookie = this.cookieManager.hasAny(['SOURCEID_TGC', 'MOD_AUTH_CAS', 'CASTGC']);
       const success = (response.status >= 300 && response.status < 400 && hasAuthCookie)
         || (html.indexOf('用户名密码') === -1 && hasAuthCookie)
         || html.indexOf('登录成功') !== -1;
-
-      console.error('DEBUG - success:', success);
 
       if (success) {
         console.log('登录成功');
