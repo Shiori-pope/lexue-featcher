@@ -26,7 +26,8 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 // Cookie 管理
 class CookieManager {
   constructor() {
-    this.cookies = {};
+    // entries: { name, value, domain, path }
+    this.jar = [];
     this.load();
   }
 
@@ -34,7 +35,14 @@ class CookieManager {
     try {
       if (fs.existsSync(COOKIE_FILE)) {
         const data = fs.readFileSync(COOKIE_FILE, 'utf-8');
-        this.cookies = JSON.parse(data);
+        const parsed = JSON.parse(data);
+        // Support both old flat format and new jar format
+        if (Array.isArray(parsed)) {
+          this.jar = parsed;
+        } else {
+          // Legacy: convert flat {name: value} to jar entries with no path constraint
+          this.jar = Object.entries(parsed).map(([name, value]) => ({ name, value, domain: '', path: '/' }));
+        }
       }
     } catch (e) {
       console.error('加载 Cookie 失败:', e.message);
@@ -43,33 +51,78 @@ class CookieManager {
 
   save() {
     try {
-      fs.writeFileSync(COOKIE_FILE, JSON.stringify(this.cookies, null, 2));
+      fs.writeFileSync(COOKIE_FILE, JSON.stringify(this.jar, null, 2));
     } catch (e) {
       console.error('保存 Cookie 失败:', e.message);
     }
   }
 
-  toString() {
-    return Object.entries(this.cookies)
-      .map(([k, v]) => `${k}=${v}`)
+  // Return cookie string for the given request URL (path-aware)
+  toStringForUrl(requestUrl) {
+    let urlPath = '/';
+    let urlDomain = '';
+    try {
+      const u = new URL(requestUrl);
+      urlPath = u.pathname || '/';
+      urlDomain = u.hostname;
+    } catch (e) { /* ignore */ }
+
+    return this.jar
+      .filter(c => {
+        // Domain match: empty domain means any domain
+        if (c.domain && urlDomain && !urlDomain.endsWith(c.domain)) return false;
+        // Path match: request path must start with cookie path
+        const cookiePath = c.path || '/';
+        return urlPath === cookiePath || urlPath.startsWith(cookiePath.endsWith('/') ? cookiePath : cookiePath + '/');
+      })
+      .map(c => `${c.name}=${c.value}`)
       .join('; ');
   }
 
-  updateFromSetCookie(setCookies) {
+  updateFromSetCookie(setCookies, requestUrl) {
     if (!setCookies) return;
     const list = Array.isArray(setCookies) ? setCookies : [setCookies];
-    list.forEach((cookie) => {
-      const [nameValue] = cookie.split(';');
+
+    let defaultDomain = '';
+    let defaultPath = '/';
+    try {
+      const u = new URL(requestUrl);
+      defaultDomain = u.hostname;
+      // Default path: directory of the request path
+      const pathParts = u.pathname.split('/');
+      pathParts.pop();
+      defaultPath = pathParts.join('/') || '/';
+    } catch (e) { /* ignore */ }
+
+    list.forEach((cookieStr) => {
+      const parts = cookieStr.split(';').map(p => p.trim());
+      const nameValue = parts[0];
       const eqIndex = nameValue.indexOf('=');
       if (eqIndex === -1) return;
       const name = nameValue.slice(0, eqIndex).trim();
       const value = nameValue.slice(eqIndex + 1).trim();
-      if (name) this.cookies[name] = value;
+      if (!name) return;
+
+      let cookiePath = defaultPath;
+      let cookieDomain = defaultDomain;
+      for (const attr of parts.slice(1)) {
+        const lower = attr.toLowerCase();
+        if (lower.startsWith('path=')) cookiePath = attr.slice(5).trim();
+        else if (lower.startsWith('domain=')) cookieDomain = attr.slice(7).trim().replace(/^\./, '');
+      }
+
+      // Replace existing cookie with same name+domain+path, otherwise add
+      const idx = this.jar.findIndex(c => c.name === name && c.domain === cookieDomain && c.path === cookiePath);
+      if (idx !== -1) {
+        this.jar[idx].value = value;
+      } else {
+        this.jar.push({ name, value, domain: cookieDomain, path: cookiePath });
+      }
     });
   }
 
   has(name) {
-    return this.cookies[name] != null;
+    return this.jar.some(c => c.name === name);
   }
 
   hasAny(names) {
@@ -86,14 +139,7 @@ class LexueClient {
   }
 
   createDispatcherFromEnv() {
-    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-    if (!proxyUrl) return null;
-    try {
-      return new ProxyAgent(proxyUrl);
-    } catch (e) {
-      console.error('代理配置无效，将跳过代理:', e.message);
-      return null;
-    }
+    return null;
   }
 
   async request(url, options = {}) {
@@ -108,7 +154,7 @@ class LexueClient {
         ...(currentOptions.headers || {})
       };
 
-      const cookie = this.cookieManager.toString();
+      const cookie = this.cookieManager.toStringForUrl(currentUrl);
       if (cookie) {
         headers['Cookie'] = cookie;
       }
@@ -128,7 +174,7 @@ class LexueClient {
         ? response.headers.getSetCookie()
         : [];
       if (setCookies.length > 0) {
-        this.cookieManager.updateFromSetCookie(setCookies);
+        this.cookieManager.updateFromSetCookie(setCookies, currentUrl);
         this.cookieManager.save();
       }
 
